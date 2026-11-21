@@ -1,33 +1,59 @@
 import * as bookRepository from '../repositories/book.repository.js';
 import * as authorRepository from '../repositories/author.repository.js';
 import * as publisherRepository from '../repositories/publisher.repository.js';
+import {Author} from '../models/index.js';
+import {sequelize} from "../config/database.js";
 
 export const addBook = async (book) => {
-    const {isbn, title} = book;
-    if (await bookRepository.findBookById(isbn)) {
-        throw new Error('Book with the same isbn already exists');
-    }
-    // Create or find the publisher
-    let publisher = await publisherRepository.findPublisherById(book.publisher);
-    if (!publisher) {
-        await publisherRepository.addPublisher(book.publisher);
-    }
-    // Process the authors
-    const authors = [];
-    for (const a of book.authors){
-        let author = await authorRepository.findAuthorById(a.name);
-        if (!author) {
-            author = await authorRepository.addAuthor(a);
+    const t = await sequelize.transaction();
+    try {
+        const {isbn, title} = book;
+        if (await bookRepository.findBookById(isbn, {transaction: t})) {
+            throw new Error('Book with the same isbn already exists');
         }
-        authors.push(author);
+        // Create or find the publisher
+        let publisher = await publisherRepository.findPublisherById(book.publisher, {transaction: t});
+        if (!publisher) {
+            await publisherRepository.addPublisher(book.publisher, {transaction: t});
+        }
+        // Process the authors
+        const authors = [];
+        for (const a of book.authors) {
+            let author = await authorRepository.findAuthorById(a.name, {transaction: t});
+            if (!author) {
+                author = await authorRepository.addAuthor(a, {transaction: t});
+            }
+            authors.push(author);
+        }
+        // Create a new Book
+        book = await bookRepository.addBook({isbn, title, publisher: book.publisher}, {transaction: t});
+        await book.setAuthors(authors, {transaction: t});
+        await t.commit();
+    } catch (e) {
+        await t.rollback();
+        console.log('Error adding book:', e);
+        throw e;
     }
-    // Create a new Book
-    book = await bookRepository.addBook({isbn, title, publisher: book.publisher});
-    await book.setAuthors(authors);
 }
 
 export const findBookByIsbn = async (isbn) => {
-    const book = await bookRepository.findBookById(isbn);
+    const book = await bookRepository.findBookById(isbn, {
+        attributes: {
+            exclude: ['createdAt', 'updatedAt']
+        },
+        include: [
+            {
+                model: Author,
+                as: 'authors',
+                through: {
+                    attributes: []
+                },
+                attributes: ['name',
+                    [sequelize.col('birth_date'), 'birthDate']
+                ]
+            }
+        ]
+    });
     if (!book) {
         throw new Error(`Book with ISBN ${isbn} not found`);
     }
@@ -35,20 +61,118 @@ export const findBookByIsbn = async (isbn) => {
 }
 
 export const removeBook = async (isbn) => {
-    const book = await findBookByIsbn(isbn);
-    await bookRepository.removeBook(book);
-    return book;
+    const t = await sequelize.transaction();
+    try {
+        const book = await bookRepository.findBookById(isbn, {
+            attributes: {
+                exclude: ['createdAt', 'updatedAt']
+            },
+            include: [
+                {
+                    model: Author,
+                    as: 'authors',
+                    through: {
+                        attributes: []
+                    },
+                    attributes: ['name',
+                        [sequelize.col('birth_date'), 'birthDate']
+                    ]
+                }
+            ]
+        });
+        if (!book) {
+            throw new Error(`Book with ISBN ${isbn} not found`);
+        }
+        await book.destroy({transaction: t});
+        await t.commit();
+        return book;
+    } catch (e) {
+        await t.rollback();
+        console.log('Error removing book:', e);
+        throw e;
+    }
 }
 
 export const updateBookTitle = async (isbn, title) => {
-    const book = await findBookByIsbn(isbn);
-    return bookRepository.updateBookTitle(book, title);
+    const t = await sequelize.transaction();
+    try {
+        const book = await bookRepository.findBookById(isbn, {
+            attributes: {
+                exclude: ['createdAt', 'updatedAt']
+            },
+            include: [
+                {
+                    model: Author,
+                    as: 'authors',
+                    through: {
+                        attributes: []
+                    },
+                    attributes: ['name',
+                        [sequelize.col('birth_date'), 'birthDate']
+                    ]
+                }
+            ]
+        });
+        if (!book) {
+            throw new Error(`Book with ISBN ${isbn} not found`);
+        }
+        await book.update({title}, {transaction: t});
+        await t.commit();
+        return book;
+    } catch (e) {
+        await t.rollback();
+        console.log('Error removing book:', e);
+        throw e;
+    }
 }
 
 export const findBooksByAuthor = async (authorName) => {
-    // TODO: Implement findBooksByAuthor service
+    const author = await authorRepository.findAuthorById(authorName);
+    if (!author) {
+        throw new Error(`Author with name ${authorName} not found`);
+    }
+    return await author.getBooks({
+        attributes: {
+            exclude: ['createdAt', 'updatedAt']
+        },
+        joinTableAttributes: [],
+        include: [
+            {
+                model: Author,
+                as: 'authors',
+                through: {
+                    attributes: []
+                },
+                attributes: ['name',
+                    [sequelize.col('birth_date'), 'birthDate']
+                ]
+            }
+        ]
+    });
 }
 
 export const findBooksByPublisher = async (publisherName) => {
-    // TODO: Implement findBooksByPublisher service
+    if (!await publisherRepository.findPublisherById(publisherName)) {
+        throw new Error(`Publisher with name ${publisherName} not found`);
+    }
+    return await bookRepository.findBooks({
+        where: {
+            publisher: publisherName
+        },
+        attributes: {
+            exclude: ['createdAt', 'updatedAt']
+        },
+        include: [
+            {
+                model: Author,
+                as: 'authors',
+                through: {
+                    attributes: []
+                },
+                attributes: ['name',
+                    [sequelize.col('birth_date'), 'birthDate']
+                ]
+            }
+        ]
+    })
 }
